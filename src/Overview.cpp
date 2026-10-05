@@ -15,6 +15,7 @@
 #include <hyprland/src/config/ConfigManager.hpp>
 #include <hyprland/src/config/shared/actions/ConfigActions.hpp>
 #include <hyprland/src/config/shared/animation/AnimationTree.hpp>
+#include <hyprland/src/config/shared/workspace/WorkspaceRuleManager.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/desktop/view/Window.hpp>
 #include <hyprland/src/layout/LayoutManager.hpp>
@@ -85,6 +86,7 @@ static bool isFloatConfig(const std::string& name) {
 
 static Config::STRING stringDefault(const std::string& name) {
     static const std::map<std::string, Config::STRING> DEFAULTS = {
+        {"plugin:hyprexpo:overview_mode", HyprexpoConfig::OVERVIEW_MODE_DEFAULT},
         {"plugin:hyprexpo:workspace_method", HyprexpoConfig::WORKSPACE_METHOD_DEFAULT},
         {"plugin:hyprexpo:border_color", HyprexpoConfig::BORDER_COLOR_DEFAULT},
         {"plugin:hyprexpo:border_color_current", HyprexpoConfig::BORDER_COLOR_CURRENT_DEFAULT},
@@ -1153,6 +1155,24 @@ COverview::COverview(PHLWORKSPACE startedOn_, PHLMONITOR monitor_, bool swipe_, 
                 lowestExistingID  = lowestExistingID ? std::min(*lowestExistingID, workspace->m_id) : workspace->m_id;
                 highestExistingID = highestExistingID ? std::max(*highestExistingID, workspace->m_id) : workspace->m_id;
             }
+
+            // Workspace rules reserve IDs for this monitor even while those workspaces are empty
+            // and therefore do not exist, so a range such as 11-20 keeps its real floor (#133).
+            for (const auto& rule : Config::workspaceRuleMgr()->getAllWorkspaceRules()) {
+                if (!rule || !rule->isEnabled() || rule->m_monitor.empty())
+                    continue;
+
+                const auto range = Hyprexpo::workspaceRuleIDRange(rule->m_workspaceString);
+                if (!range)
+                    continue;
+
+                const auto boundMonitor = State::monitorState()->query().relativeTo(PMONITOR).configString(rule->m_monitor).run();
+                if (!boundMonitor || boundMonitor != PMONITOR)
+                    continue;
+
+                lowestExistingID  = lowestExistingID ? std::min(*lowestExistingID, range->first) : range->first;
+                highestExistingID = highestExistingID ? std::max(*highestExistingID, range->last) : range->last;
+            }
         }
 
         const size_t backtrackTarget = Hyprexpo::centeredWorkspaceBacktrack(images.size(), methodStartID, lowestExistingID, highestExistingID);
@@ -1385,14 +1405,20 @@ COverview::COverview(PHLWORKSPACE startedOn_, PHLMONITOR monitor_, bool swipe_, 
             closeOverviewsSelecting(TARGET);
     };
 
-    auto onTouchSelect = [this](Event::SCallbackInfo& info) {
+    auto onTouchSelect = [this](const ITouch::SDownEvent& event, Event::SCallbackInfo& info) {
         if (closing || info.cancelled)
             return;
 
-        const Vector2D GLOBAL = g_pInputManager->getMouseCoordsInternal();
-        auto* const    TARGET = gridOverviewForGlobalPoint(GLOBAL);
-        if (!TARGET)
+        auto MON = event.device && !event.device->m_boundOutput.empty() ? State::monitorState()->query().name(event.device->m_boundOutput).run() : PHLMONITOR{};
+        if (!MON)
+            MON = Desktop::focusState()->monitor();
+
+        auto* const TARGET = dynamic_cast<COverview*>(overviewForMonitor(MON));
+        if (!TARGET || TARGET->closing)
             return;
+
+        TARGET->lastMousePosLocal = event.pos * MON->m_size;
+        TARGET->updateHoveredFromMouse();
 
         info.cancelled = true;
         if (TARGET->selectHoveredWorkspace())
@@ -1408,14 +1434,7 @@ COverview::COverview(PHLWORKSPACE startedOn_, PHLMONITOR monitor_, bool swipe_, 
         onCursorMove(info);
     });
     mouseButtonHook = Event::bus()->m_events.input.mouse.button.listen([onCursorSelect](const IPointer::SButtonEvent& event, Event::SCallbackInfo& info) { onCursorSelect(event, info); });
-    touchDownHook = Event::bus()->m_events.input.touch.down.listen([onTouchSelect](const ITouch::SDownEvent& event, Event::SCallbackInfo& info) {
-        if (event.device && !event.device->m_boundOutput.empty()) {
-            const auto MON = State::monitorState()->query().name(event.device->m_boundOutput).run();
-            if (!dynamic_cast<COverview*>(overviewForMonitor(MON)))
-                return;
-        }
-        onTouchSelect(info);
-    });
+    touchDownHook = Event::bus()->m_events.input.touch.down.listen([onTouchSelect](const ITouch::SDownEvent& event, Event::SCallbackInfo& info) { onTouchSelect(event, info); });
     workspaceMoveHook = Event::bus()->m_events.window.moveToWorkspace.listen([this](PHLWINDOW window, PHLWORKSPACE workspace) { onWindowMoveToWorkspace(window, workspace); });
 
     enterSubmapIfEnabled();

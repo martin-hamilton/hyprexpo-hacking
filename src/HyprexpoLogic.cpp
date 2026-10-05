@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cmath>
 #include <limits>
+#include <string_view>
 #include <tuple>
 
 namespace Hyprexpo {
@@ -374,6 +375,50 @@ std::size_t centeredWorkspaceBacktrack(std::size_t tileCount, int64_t activeWork
     return static_cast<std::size_t>(boundedTarget);
 }
 
+static std::string_view trimWorkspaceToken(std::string_view token) {
+    while (!token.empty() && std::isspace(static_cast<unsigned char>(token.front())))
+        token.remove_prefix(1);
+    while (!token.empty() && std::isspace(static_cast<unsigned char>(token.back())))
+        token.remove_suffix(1);
+    return token;
+}
+
+static std::optional<int64_t> parseReservedWorkspaceID(std::string_view token) {
+    token = trimWorkspaceToken(token);
+    if (token.empty() || !std::all_of(token.begin(), token.end(), [](unsigned char c) { return std::isdigit(c) != 0; }))
+        return std::nullopt;
+
+    int64_t    id     = 0;
+    const auto result = std::from_chars(token.data(), token.data() + token.size(), id);
+    if (result.ec != std::errc{} || result.ptr != token.data() + token.size() || id < 1)
+        return std::nullopt;
+
+    return id;
+}
+
+std::optional<SWorkspaceIDRange> workspaceRuleIDRange(const std::string& workspaceString) {
+    const auto selector = trimWorkspaceToken(workspaceString);
+    if (const auto id = parseReservedWorkspaceID(selector))
+        return SWorkspaceIDRange{*id, *id};
+
+    // Only a bare range selector reserves IDs; compound selectors such as r[1-5]w[1] describe
+    // window state rather than a monitor's workspace plan.
+    if (!selector.starts_with("r[") || !selector.ends_with("]"))
+        return std::nullopt;
+
+    const auto body = selector.substr(2, selector.size() - 3);
+    const auto dash = body.find('-');
+    if (dash == std::string_view::npos)
+        return std::nullopt;
+
+    const auto from = parseReservedWorkspaceID(body.substr(0, dash));
+    const auto to   = parseReservedWorkspaceID(body.substr(dash + 1));
+    if (!from || !to || *to < *from)
+        return std::nullopt;
+
+    return SWorkspaceIDRange{*from, *to};
+}
+
 int tileIndexFromPoint(double x, double y, double width, double height, int sideLength) {
     if (width <= 0 || height <= 0 || sideLength <= 0)
         return -1;
@@ -405,6 +450,14 @@ ENumberKeyMode numberKeyModeFromString(const std::string& mode) {
 
 bool shouldAbortOverviewCloseForWorkspaceMove(bool windowPinned, bool movedOnOverviewMonitor) {
     return !windowPinned && movedOnOverviewMonitor;
+}
+
+EOverviewModePreference overviewModePreferenceFromString(const std::string& mode) {
+    const auto normalized = lowerString(trimString(mode));
+    if (normalized == "grid")
+        return EOverviewModePreference::Grid;
+
+    return EOverviewModePreference::Auto;
 }
 
 SDropIntentGeometry computeDropIntentGeometry(const SDropIntentInput& input) {

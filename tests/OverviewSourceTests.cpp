@@ -121,6 +121,13 @@ int main() {
            "drag/drop enable configuration gates drag start");
     expect(source.find("if (**PDRAGDROPENABLE && SOURCE)") != std::string::npos && source.find("SOURCE->finishWindowDrag()") != std::string::npos,
            "drag/drop enable configuration gates drag completion");
+    const auto touchSelect = extractFunction(source, "auto onTouchSelect =");
+    expectContains(touchSelect, "const ITouch::SDownEvent& event", "grid touch selection consumes the touch-down payload");
+    expectContains(touchSelect, "event.pos * MON->m_size", "grid touch selection hit-tests the touched logical position");
+    expectOrder(touchSelect, "State::monitorState()->query()", "MON = Desktop::focusState()->monitor()",
+                "automatic or unresolved touch-output bindings fall back to Hyprland's focused monitor");
+    expectOrder(touchSelect, "TARGET->lastMousePosLocal", "TARGET->selectHoveredWorkspace()", "grid touch position updates hover before selection");
+    expectAbsent(touchSelect, "getMouseCoordsInternal()", "grid touch selection is independent of stale mouse coordinates");
 
     const auto dispatchersSource = readFile("src/Dispatchers.cpp");
     expect(!dispatchersSource.empty(), "src/Dispatchers.cpp can be read from repo root");
@@ -422,6 +429,15 @@ int main() {
     const auto helperPos = centerBranch.find("Hyprexpo::centeredWorkspaceBacktrack(");
     expect(helperPos != std::string::npos && boundsScanPos != std::string::npos && boundsScanPos < centerBranchStart + helperPos,
            "center-current traversal uses the pure backtrack helper after collecting bounds");
+    const auto ruleScanPos = overviewConstructor.find("Config::workspaceRuleMgr()->getAllWorkspaceRules()", boundsScanPos);
+    expect(boundsScanPos != std::string::npos && ruleScanPos != std::string::npos && ruleScanPos < centerBranchStart + helperPos,
+           "center-current bounds include workspace IDs reserved for the monitor by workspace rules before backtracking");
+    expect(ruleScanPos != std::string::npos && overviewConstructor.find("rule->isEnabled()", ruleScanPos) < centerBranchStart + helperPos,
+           "disabled workspace rules reserve no center-current bounds");
+    expect(ruleScanPos != std::string::npos && overviewConstructor.find("configString(rule->m_monitor)", ruleScanPos) < centerBranchStart + helperPos,
+           "reserved bounds resolve rule monitors through Hyprland's monitor query like its own selector");
+    expect(ruleScanPos != std::string::npos && overviewConstructor.find("Hyprexpo::workspaceRuleIDRange(rule->m_workspaceString)", ruleScanPos) < centerBranchStart + helperPos,
+           "reserved bounds parse rule workspace strings through the pure helper");
     expect(centerBranch.find("for (size_t i = 1; i <= backtrackTarget; ++i)") != std::string::npos,
            "center-current lower scan includes the full helper target");
     expect(centerBranch.find("if (currentID >= firstID)") != std::string::npos && centerBranch.find("if (i > 0 && currentID <= firstID)") != std::string::npos,
@@ -891,6 +907,31 @@ int main() {
     expectContains(sessionSource, "return nullptr", "detected scrolling initialization failure returns no session");
     expectAbsent(sessionSource, "using grid fallback", "detected scrolling never silently falls back to grid");
     expectOrder(sessionSource, "if (detectedScrolling)", "return std::make_unique<COverview>", "grid construction is reachable only after the detected-scrolling branch");
+
+    expectContains(configSource, "plugin:hyprexpo:overview_mode", "overview mode opt-out configuration is registered");
+    expectContains(configSource, "HyprexpoConfig::OVERVIEW_MODE_DEFAULT", "overview mode configuration has a compatibility default");
+    expectContains(sessionSource, "plugin:hyprexpo:overview_mode", "session factory reads the overview mode configuration");
+    expectContains(sessionSource, "#include \"HyprlandConfigCompat.hpp\"", "session factory includes the shared configuration compatibility boundary");
+    const auto sessionFactory = extractFunction(sessionSource, "std::unique_ptr<IOverviewSession> createOverviewSession(");
+    expectContains(sessionFactory, "const std::string overviewMode = CompatHyprlandAPI::stringValue(\"plugin:hyprexpo:overview_mode\");",
+                   "session factory obtains an owned overview mode through the safe string reader");
+    expectContains(sessionFactory, "overviewModePreferenceFromString(overviewMode)", "session factory parses the owned overview mode value");
+    const auto modeLookupStart = sessionFactory.find("const uint64_t generation =");
+    const auto modeLookupEnd = sessionFactory.find("const bool detectedScrolling");
+    expect(modeLookupStart != std::string::npos && modeLookupEnd != std::string::npos && modeLookupStart < modeLookupEnd,
+           "overview mode lookup lies between generation allocation and layout detection");
+    if (modeLookupStart != std::string::npos && modeLookupEnd != std::string::npos && modeLookupStart < modeLookupEnd) {
+        const auto modeLookup = sessionFactory.substr(modeLookupStart, modeLookupEnd - modeLookupStart);
+        expectAbsent(modeLookup, "static ", "overview mode is read afresh for every session");
+        expectAbsent(modeLookup, "getDataStaticPtr", "overview mode lookup does not retain a borrowed configuration pointer");
+    }
+    expectContains(extractFunction(source, "static Config::STRING stringDefault("),
+                   "{\"plugin:hyprexpo:overview_mode\", HyprexpoConfig::OVERVIEW_MODE_DEFAULT}",
+                   "missing overview mode config uses the shared auto default");
+    expectContains(sessionSource, "overviewModePreferenceFromString", "session factory parses the overview mode configuration through the shared pure parser");
+    expectContains(sessionSource, "EOverviewModePreference::Grid", "session factory checks for the forced-grid overview mode preference");
+    expectOrder(sessionSource, "plugin:hyprexpo:overview_mode", "detectedScrolling", "overview mode is read before scrolling layout detection runs");
+    expectOrder(sessionSource, "forcedGrid", "workspaceUsesScrollingLayout(startedOn)", "a forced-grid preference can short-circuit scrolling layout detection");
     expectContains(dispatchersSource, "createOverview(monitor)", "dispatcher creates sessions through the monitor registry");
     expectContains(source, "createOverviewSession(monitor->m_activeWorkspace, monitor, swipe)", "registry passes the explicit monitor to the sole session factory");
     expectContains(dispatchersSource, "failed to initialize native scrolling overview", "dispatcher reports fail-closed scrolling creation");

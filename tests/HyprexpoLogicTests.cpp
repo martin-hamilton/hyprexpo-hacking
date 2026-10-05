@@ -813,6 +813,29 @@ int main() {
     expect(centeredWorkspaceBacktrack(9, std::numeric_limits<int64_t>::max(), std::numeric_limits<int64_t>::min(), std::numeric_limits<int64_t>::max()) == 8,
            "center-current handles the full signed workspace range without overflow");
 
+    // Issue #133: a monitor whose range starts above 1 keeps its rule-reserved floor even
+    // when the lowest workspace is currently empty and therefore does not exist.
+    expect(workspaceRuleIDRange("11") == std::optional<SWorkspaceIDRange>{{11, 11}}, "numeric workspace rules reserve a single ID");
+    expect(workspaceRuleIDRange(" 11 ") == std::optional<SWorkspaceIDRange>{{11, 11}}, "numeric workspace rules tolerate surrounding whitespace");
+    expect(workspaceRuleIDRange("r[11-20]") == std::optional<SWorkspaceIDRange>{{11, 20}}, "range workspace rules reserve their whole span");
+    expect(workspaceRuleIDRange(" r[ 11 - 20 ] ") == std::optional<SWorkspaceIDRange>{{11, 20}}, "range workspace rules tolerate inner whitespace");
+    expect(workspaceRuleIDRange("r[7-7]") == std::optional<SWorkspaceIDRange>{{7, 7}}, "single-ID ranges reserve that ID");
+    expect(!workspaceRuleIDRange(""), "empty workspace rules reserve nothing");
+    expect(!workspaceRuleIDRange("name:foo"), "named workspace rules reserve no numeric IDs");
+    expect(!workspaceRuleIDRange("special:scratch"), "special workspace rules reserve no numeric IDs");
+    expect(!workspaceRuleIDRange("0"), "workspace ID zero is never reserved");
+    expect(!workspaceRuleIDRange("-3"), "negative workspace IDs are never reserved");
+    expect(!workspaceRuleIDRange("+3"), "signed workspace strings are not plain IDs");
+    expect(!workspaceRuleIDRange("r[20-11]"), "reversed ranges reserve nothing");
+    expect(!workspaceRuleIDRange("r[0-5]"), "ranges starting below one reserve nothing");
+    expect(!workspaceRuleIDRange("r[1-5]w[1]"), "compound static selectors reserve nothing");
+    expect(!workspaceRuleIDRange("r[1-]"), "open-ended ranges reserve nothing");
+    expect(!workspaceRuleIDRange("r[a-b]"), "non-numeric ranges reserve nothing");
+    expect(!workspaceRuleIDRange("99999999999999999999"), "overflowing workspace IDs reserve nothing");
+    expect(!workspaceRuleIDRange("r[1-99999999999999999999]"), "overflowing range bounds reserve nothing");
+    expect(centeredWorkspaceBacktrack(9, 12, 11, 20) == 1, "a reserved floor of 11 pulls a 3x3 grid opened on 12 back to workspace 11");
+    expect(centeredWorkspaceBacktrack(9, 12, 12, 20) == 0, "without the reserved floor the same grid starts at 12");
+
     expect(HyprexpoConfig::SHOW_PINNED_WINDOWS_DEFAULT == 0, "pinned windows are hidden from previews by default");
     expect(!shouldAbortOverviewCloseForWorkspaceMove(true, true), "pinned moves on the overview monitor preserve the close animation");
     expect(shouldAbortOverviewCloseForWorkspaceMove(false, true), "non-pinned moves on the overview monitor abort the close animation");
@@ -824,6 +847,11 @@ int main() {
     expect(numberKeyModeFromString("passthrough") == ENumberKeyMode::Passthrough, "passthrough number-key mode parses");
     expect(numberKeyModeFromString("invalid") == ENumberKeyMode::Workspace, "invalid number-key mode safely preserves the default");
     expect(HyprexpoConfig::DRAG_DROP_ENABLE_DEFAULT == 1, "drag and drop is enabled by default");
+    expect(std::string{HyprexpoConfig::OVERVIEW_MODE_DEFAULT} == "auto", "overview mode defaults to detection-based auto behavior");
+    expect(overviewModePreferenceFromString("auto") == EOverviewModePreference::Auto, "explicit auto overview mode parses");
+    expect(overviewModePreferenceFromString(" GRID ") == EOverviewModePreference::Grid, "grid overview mode is case-insensitive and trimmed");
+    expect(overviewModePreferenceFromString("") == EOverviewModePreference::Auto, "empty overview mode config falls back to auto");
+    expect(overviewModePreferenceFromString("scrolling") == EOverviewModePreference::Auto, "unrecognized overview mode values safely preserve auto behavior");
 
     const auto boundedGapFill = expandDynamicWorkspaceIDs({2, 4}, true, 64);
     expect(boundedGapFill.has_value(), "bounded fill_gaps range is accepted");
@@ -930,6 +958,35 @@ int main() {
     const char*       nullConfigString = nullptr;
     expect(decodeConfigString(&nullConfigString, false, "up") == "up", "a null inner pointer falls back to the default");
     expect(decodeConfigString(nullptr, false, "up") == "up", "an absent config value falls back to the default");
+
+    std::string rawOverviewStorage = "auto";
+    const char* rawOverviewMode = rawOverviewStorage.c_str();
+    std::string stdOverviewMode = "auto";
+    std::string* stdOverviewPtr = &stdOverviewMode;
+    const auto rawOverviewCopy = decodeConfigString(&rawOverviewMode, false, HyprexpoConfig::OVERVIEW_MODE_DEFAULT);
+    const auto stdOverviewCopy = decodeConfigString(&stdOverviewPtr, true, HyprexpoConfig::OVERVIEW_MODE_DEFAULT);
+    expect(overviewModePreferenceFromString(rawOverviewCopy) == EOverviewModePreference::Auto, "raw overview mode decodes to auto");
+    expect(overviewModePreferenceFromString(stdOverviewCopy) == EOverviewModePreference::Auto, "std::string overview mode decodes to auto");
+    for (const char* mode : {"grid", "auto"}) {
+        rawOverviewStorage = mode;
+        rawOverviewMode = rawOverviewStorage.c_str();
+        stdOverviewMode = mode;
+        const auto expected = stdOverviewMode == "grid" ? EOverviewModePreference::Grid : EOverviewModePreference::Auto;
+        expect(overviewModePreferenceFromString(decodeConfigString(&rawOverviewMode, false, HyprexpoConfig::OVERVIEW_MODE_DEFAULT)) == expected,
+               "fresh raw overview mode reads observe auto-to-grid-to-auto changes");
+        expect(overviewModePreferenceFromString(decodeConfigString(&stdOverviewPtr, true, HyprexpoConfig::OVERVIEW_MODE_DEFAULT)) == expected,
+               "fresh std::string overview mode reads observe auto-to-grid-to-auto changes");
+        expect(rawOverviewCopy == "auto" && stdOverviewCopy == "auto", "decoded overview modes own their strings after backend mutation");
+    }
+    rawOverviewMode = nullptr;
+    stdOverviewPtr = nullptr;
+    expect(overviewModePreferenceFromString(decodeConfigString(&rawOverviewMode, false, HyprexpoConfig::OVERVIEW_MODE_DEFAULT)) == EOverviewModePreference::Auto,
+           "a null raw overview mode pointer falls back to auto");
+    expect(overviewModePreferenceFromString(decodeConfigString(&stdOverviewPtr, true, HyprexpoConfig::OVERVIEW_MODE_DEFAULT)) == EOverviewModePreference::Auto,
+           "a null std::string overview mode pointer falls back to auto");
+    for (bool stringObject : {false, true})
+        expect(overviewModePreferenceFromString(decodeConfigString(nullptr, stringObject, HyprexpoConfig::OVERVIEW_MODE_DEFAULT)) == EOverviewModePreference::Auto,
+               "an absent overview mode reply falls back to auto for either representation");
 
     const auto gestureDisabled = evaluateGestureSync({.fingers = 0, .direction = "up", .directionValid = true});
     expect(!gestureDisabled.registerGesture, "gesture_fingers = 0 registers nothing");

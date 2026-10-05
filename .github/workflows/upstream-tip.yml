@@ -7,13 +7,36 @@ on:
 
 permissions:
   contents: read
+  actions: read
+  pull-requests: read
 
 concurrency:
   group: upstream-tip-probe
   cancel-in-progress: false
 
 jobs:
+  observe:
+    name: Observe upstream state
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Record actionable upstream state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/watch-hyprland.py --format markdown | tee upstream-observation.md
+      - name: Preserve observation
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: upstream-observation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: upstream-observation.md
+          if-no-files-found: warn
+
   probe:
+    needs: observe
     name: Advisory upstream tip
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -23,6 +46,14 @@ jobs:
         with:
           ref: hyprland-git
           fetch-depth: 0
+          persist-credentials: false
+      # The source branch can predate cache tooling. Use the immutable workflow
+      # revision for the builder while archiving/building hyprland-git source.
+      - name: Checkout workflow build tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .ci-tooling
           persist-credentials: false
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
         with:
@@ -38,8 +69,16 @@ jobs:
           echo "Probing plugin $(git rev-parse HEAD) against Hyprland $rev" >> "$GITHUB_STEP_SUMMARY"
       - name: Probe without changing the development pin
         env:
+          BUNNY_CACHE_URL: ${{ vars.BUNNY_CACHE_URL }}
+          BUNNY_CACHE_PUBLIC_KEY: ${{ vars.BUNNY_CACHE_PUBLIC_KEY }}
+          BUNNY_CACHE_PREFIX: ${{ vars.BUNNY_CACHE_PREFIX }}
+          BUNNY_CACHE_STORAGE_ENDPOINT: ${{ vars.BUNNY_CACHE_STORAGE_ENDPOINT }}
+          BUNNY_CACHE_WRITE: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/hyprland-git') && vars.BUNNY_CACHE_URL != '' }}
+          BUNNY_CACHE_SIGNING_KEY: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/hyprland-git') && secrets.BUNNY_CACHE_SIGNING_KEY || '' }}
+          BUNNY_CACHE_STORAGE_ZONE: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/hyprland-git') && secrets.BUNNY_CACHE_STORAGE_ZONE || '' }}
+          BUNNY_CACHE_STORAGE_PASSWORD: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/hyprland-git') && secrets.BUNNY_CACHE_STORAGE_PASSWORD || '' }}
           UPSTREAM_REV: ${{ steps.upstream.outputs.rev }}
-        run: ./scripts/ci-build.sh "$UPSTREAM_REV" "$RUNNER_TEMP/upstream-tip-evidence"
+        run: ./.ci-tooling/scripts/ci-build.sh "$UPSTREAM_REV" "$RUNNER_TEMP/upstream-tip-evidence"
       - name: Explain advisory failure
         if: failure()
         run: |
