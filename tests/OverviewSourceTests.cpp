@@ -447,6 +447,17 @@ int main() {
     expect(!renderSource.empty(), "src/OverviewRender.cpp can be read from repo root");
     const auto closeOverview = extractFunction(renderSource, "void COverview::close(bool switchToSelection) {");
     expect(!closeOverview.empty(), "overview close function exists");
+    expectOrder(closeOverview, "if (TARGET && TARGET != MON)", "const auto targetSize", "foreign selection bypasses the source zoom");
+    expectOrder(closeOverview, "destroyAllOverviews();", "Config::Actions::changeWorkspace(SELECTED)", "foreign selection changes focus after all sessions are removed");
+    expectOrder(closeOverview, "std::ranges::find(State::monitorState()->monitors(), TARGET)", "TARGET->setSpecialWorkspace(0);", "foreign selection hides a live target monitor's special workspace");
+    expectOrder(closeOverview, "TARGET->setSpecialWorkspace(0);", "Config::Actions::changeWorkspace(SELECTED)", "foreign selection hides the target special workspace before switching");
+    expectContains(closeOverview, "overviewForSession(key, generation)", "deferred selection cannot destroy a replacement session");
+    const auto deferredSelection = extractFunction(closeOverview, "g_pEventLoopManager->doLater(");
+    expectOrder(deferredSelection, "destroyAllOverviews();", "SELECTED->m_monitor.lock()", "deferred selection resolves current ownership after teardown");
+    expectContains(deferredSelection, "if (!TARGET ||", "deferred selection rejects a missing owner");
+    expectAbsent(deferredSelection, "SELECTED, TARGET", "deferred selection never captures a stale owner");
+    expectContains(mainSource, "Hyprexpo::Capture::isCapturingWorkspacePreview()", "owner captures bypass every overview session");
+
     expect(closeOverview.find("resetSubmapIfNeeded();") != std::string::npos,
            "normal overview close restores the captured submap");
     expect(overviewConstructor.find("emptyTilesSelectable = skipEmpty;") != std::string::npos,
@@ -794,6 +805,14 @@ int main() {
 
     const auto workspaceCapture = extractFunction(captureSource, "bool captureWorkspacePreview(");
     expect(!workspaceCapture.empty(), "shared workspace capture implementation exists");
+    const auto framebufferPreparation = extractFunction(captureSource, "bool preparePreviewFramebuffer(");
+    expectContains(framebufferPreparation, "monitor->useFP16()", "preview allocation follows the monitor working-buffer precision");
+    expectContains(framebufferPreparation, "DRM_FORMAT_ABGR16161616F", "FP16 previews retain HDR values beyond the integer range");
+    expectContains(framebufferPreparation, "framebufferFormatWithAlpha(monitor->m_output->state->state().drmFormat)",
+                   "non-FP16 previews retain the output format with alpha");
+    expectContains(framebufferPreparation, "monitor->workBufferImageDescription()", "preview textures retain the captured working color space");
+    expectContains(framebufferPreparation, "prepareFramebuffer(", "both capture paths use the tested framebuffer preparation policy");
+    expectOrder(workspaceCapture, "preparePreviewFramebuffer(", "beginRender(", "workspace color metadata is established before capture rendering");
     for (const auto& token : {"beginRender(", "clearWithColor(", "applyExclusiveWorkspacePreviewState(", "applyWorkspaceWindowGoalState(", "CPinnedWindowPreviewGuard",
                               "renderWorkspace(", "restoreWorkspaceWindowGoalState(", "restoreWorkspacePreviewStates(", "restoreActiveWorkspaceAfterPreview(", "rendererState.finish()"})
         expectContains(workspaceCapture, token, "shared workspace capture preserves grid operation " + std::string{token});
@@ -812,6 +831,7 @@ int main() {
 
     const auto windowCapture = extractFunction(captureSource, "SWindowCaptureResult captureWindowPreview(");
     expect(!windowCapture.empty(), "tight scrolling-target capture implementation exists");
+    expectOrder(windowCapture, "preparePreviewFramebuffer(", "beginFullFakeRender(", "window captures use the same HDR-safe framebuffer policy before rendering");
     for (const auto& token : {"createFB(", "beginFullFakeRender(", "m_bBlockSurfaceFeedback = true", "m_bRenderingSnapshot = true", "startRenderPass()", "renderWindow(",
                               "Render::RENDER_PASS_ALL, true, true", "blockScreenShader = true", "rendererState.finish()", "getTexture()", "result.completed"})
         expectContains(windowCapture, token, "tight target capture uses approved GPU operation " + std::string{token});

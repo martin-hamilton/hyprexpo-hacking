@@ -760,6 +760,11 @@ void checkScrollingMutationTransactions() {
 }
 
 int main() {
+    expect(Hyprexpo::absoluteWorkspaceIDs(1, 9, 0) == std::vector<int64_t>({1,2,3,4,5,6,7,8,9}), "cross-monitor first grid includes every absolute ID");
+    expect(Hyprexpo::absoluteWorkspaceIDs(6, 4, 8) == std::vector<int64_t>({6,7,8,-1}), "cross-monitor cap produces unselectable padding");
+    expect(Hyprexpo::absoluteWorkspaceIDs(6, 2, 5) == std::vector<int64_t>({-1,-1}), "cap below anchor stays empty");
+    expect(Hyprexpo::absoluteWorkspaceIDs(-1, 2, 0) == std::vector<int64_t>({-1,-1}), "special IDs are not absolute first anchors");
+    expect(Hyprexpo::absoluteWorkspaceIDs(INT64_MAX, 2, 0) == std::vector<int64_t>({INT64_MAX,-1}), "absolute workspace enumeration cannot overflow");
     using namespace Hyprexpo;
 
     expect(trimString("  DP-1 first 1 \t") == "DP-1 first 1", "trimString removes surrounding whitespace");
